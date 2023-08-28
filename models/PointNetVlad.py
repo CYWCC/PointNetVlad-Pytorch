@@ -8,7 +8,6 @@ import numpy as np
 import torch.nn.functional as F
 import math
 
-
 class NetVLADLoupe(nn.Module):
     def __init__(self, feature_size, max_samples, cluster_size, output_dim,
                  gating=True, add_batch_norm=True, is_training=True):
@@ -68,7 +67,7 @@ class NetVLADLoupe(nn.Module):
         vlad = vlad - a
 
         vlad = F.normalize(vlad, dim=1, p=2)
-        vlad = vlad.view((-1, self.cluster_size * self.feature_size))
+        vlad = vlad.contiguous().view((-1, self.cluster_size * self.feature_size))
         vlad = F.normalize(vlad, dim=1, p=2)
 
         vlad = torch.matmul(vlad, self.hidden1_weights)
@@ -149,6 +148,7 @@ class STN3d(nn.Module):
 
     def forward(self, x):
         batchsize = x.size()[0]
+        # xyz = x[]
         if self.use_bn:
             x = F.relu(self.bn1(self.conv1(x)))
             x = F.relu(self.bn2(self.conv2(x)))
@@ -167,9 +167,9 @@ class STN3d(nn.Module):
             x = F.relu(self.fc1(x))
             x = F.relu(self.fc2(x))
         x = self.fc3(x)
-
-        iden = Variable(torch.from_numpy(np.eye(self.k).astype(np.float32))).view(
-            1, self.k*self.k).repeat(batchsize, 1)
+        # iden = torch.from_numpy(np.eye(self.k).astype(np.float32)).view(1, self.k*self.k).repeat(batchsize, 1)
+        iden = torch.eye(self.k, dtype=torch.float32).view(1, self.k * self.k).repeat(batchsize, 1)
+        # iden = Variable(torch.from_numpy(np.eye(self.k).astype(np.float32))).view(1, self.k*self.k).repeat(batchsize, 1)
         if x.is_cuda:
             iden = iden.cuda()
         x = x + iden
@@ -178,12 +178,12 @@ class STN3d(nn.Module):
 
 
 class PointNetfeat(nn.Module):
-    def __init__(self, num_points=2500, global_feat=True, feature_transform=False, max_pool=True):
+    def __init__(self, num_points=2500, inputdim=3, global_feat=True, feature_transform=False, max_pool=True):
         super(PointNetfeat, self).__init__()
         self.stn = STN3d(num_points=num_points, k=3, use_bn=False)
         self.feature_trans = STN3d(num_points=num_points, k=64, use_bn=False)
         self.apply_feature_trans = feature_transform
-        self.conv1 = torch.nn.Conv2d(1, 64, (1, 3))
+        self.conv1 = torch.nn.Conv2d(1, 64, (1, inputdim))  # (1，3）  (1, 4)
         self.conv2 = torch.nn.Conv2d(64, 64, (1, 1))
         self.conv3 = torch.nn.Conv2d(64, 64, (1, 1))
         self.conv4 = torch.nn.Conv2d(64, 128, (1, 1))
@@ -199,21 +199,23 @@ class PointNetfeat(nn.Module):
         self.max_pool = max_pool
 
     def forward(self, x):
-        batchsize = x.size()[0]
-        trans = self.stn(x)
-        x = torch.matmul(torch.squeeze(x), trans)
-        x = x.view(batchsize, 1, -1, 3)
-        #x = x.transpose(2,1)
-        #x = torch.bmm(x, trans)
-        #x = x.transpose(2,1)
+        batchsize, _, _, input_dim = x.size()
+        xyz = x[:, :, :, :3]
+        ### STN
+        # trans = self.stn(xyz)
+        # xyz = torch.matmul(torch.squeeze(xyz), trans)
+        # xyz = xyz.view(batchsize, 1, -1, 3)
+
+        if input_dim > 3:
+            x = torch.cat((xyz, x[:, :, :, 3:]), dim=3)
+        else:
+            x = xyz
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         pointfeat = x
         if self.apply_feature_trans:
             f_trans = self.feature_trans(x)
-            x = torch.squeeze(x)
-            if batchsize == 1:
-                x = torch.unsqueeze(x, 0)
+            x = torch.squeeze(x, 3)
             x = torch.matmul(x.transpose(1, 2), f_trans)
             x = x.transpose(1, 2).contiguous()
             x = x.view(batchsize, 64, -1, 1)
@@ -233,17 +235,19 @@ class PointNetfeat(nn.Module):
 
 
 class PointNetVlad(nn.Module):
-    def __init__(self, num_points=2500, global_feat=True, feature_transform=False, max_pool=True, output_dim=1024):
+    def __init__(self, global_feat=True, feature_transform=False, max_pool=True, inputdim=3, output_dim=1024, num_points=2500):
         super(PointNetVlad, self).__init__()
-        self.point_net = PointNetfeat(num_points=num_points, global_feat=global_feat,
+        self.point_net = PointNetfeat(num_points=num_points, global_feat=global_feat, inputdim=inputdim,
                                       feature_transform=feature_transform, max_pool=max_pool)
         self.net_vlad = NetVLADLoupe(feature_size=1024, max_samples=num_points, cluster_size=64,
                                      output_dim=output_dim, gating=True, add_batch_norm=True,
                                      is_training=True)
 
     def forward(self, x):
-        x = self.point_net(x)
+        x = self.point_net(x) # （b，1，N，dim）
+        x = F.normalize(x)
         x = self.net_vlad(x)
+        x = F.normalize(x)
         return x
 
 

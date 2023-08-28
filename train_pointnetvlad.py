@@ -1,31 +1,23 @@
+import torch
 import argparse
-import importlib
-import math
-import os
-import socket
 import sys
+from sklearn.neighbors import KDTree
 
-import numpy as np
-from sklearn.neighbors import KDTree, NearestNeighbors
-
-import config as cfg
-import evaluate
+import evaluate_radar as evaluate
 import loss.pointnetvlad_loss as PNV_loss
 import models.PointNetVlad as PNV
-import torch
+
 import torch.nn as nn
 from loading_pointclouds import *
-from tensorboardX import SummaryWriter
-from torch.autograd import Variable
+from torch.utils.tensorboard import SummaryWriter
 from torch.backends import cudnn
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print("device:", device)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(BASE_DIR)
-
-
 
 cudnn.enabled = True
 
@@ -39,9 +31,9 @@ parser.add_argument('--negatives_per_query', type=int, default=18,
                     help='Number of definite negatives in each training tuple [default: 18]')
 parser.add_argument('--max_epoch', type=int, default=20,
                     help='Epoch to run [default: 20]')
-parser.add_argument('--batch_num_queries', type=int, default=2,
+parser.add_argument('--batch_num_queries', type=int, default=8,
                     help='Batch Size during training [default: 2]')
-parser.add_argument('--learning_rate', type=float, default=0.000005,
+parser.add_argument('--learning_rate', type=float, default=0.00001,
                     help='Initial learning rate [default: 0.000005]')
 parser.add_argument('--momentum', type=float, default=0.9,
                     help='Initial learning rate [default: 0.9]')
@@ -57,21 +49,17 @@ parser.add_argument('--margin_2', type=float, default=0.2,
                     help='Margin for hinge loss [default: 0.2]')
 parser.add_argument('--loss_function', default='quadruplet', choices=[
                     'triplet', 'quadruplet'], help='triplet or quadruplet [default: quadruplet]')
-parser.add_argument('--loss_not_lazy', action='store_false',
-                    help='If present, do not use lazy variant of loss')
-parser.add_argument('--loss_ignore_zero_batch', action='store_true',
-                    help='If present, mean only batches with loss > 0.0')
-parser.add_argument('--triplet_use_best_positives', action='store_true',
-                    help='If present, use best positives, otherwise use hardest positives')
-parser.add_argument('--resume', action='store_true',
-                    help='If present, restore checkpoint and resume training')
-parser.add_argument('--dataset_folder', default='../../dataset/',
+parser.add_argument('--loss_not_lazy', type=bool, default=True, help='If present, do not use lazy variant of loss')
+parser.add_argument('--loss_ignore_zero_batch', type=bool, default=True, help='If present, mean only batches with loss > 0.0')
+parser.add_argument('--triplet_use_best_positives', type=bool, default=True, help='If present, use best positives, otherwise use hardest positives')
+parser.add_argument('--resume', type=bool, default=False, help='If present, restore checkpoint and resume training')
+parser.add_argument('--dataset_folder', default='/home/cyw/CYW/Datasets/mmWave-Radar-Relocalization-main/dataset/',
                     help='PointNetVlad Dataset Folder')
 
 FLAGS = parser.parse_args()
 cfg.BATCH_NUM_QUERIES = FLAGS.batch_num_queries
 #cfg.EVAL_BATCH_SIZE = 12
-cfg.NUM_POINTS = 4096
+# cfg.NUM_POINTS = 64  # 1280
 cfg.TRAIN_POSITIVES_PER_QUERY = FLAGS.positives_per_query
 cfg.TRAIN_NEGATIVES_PER_QUERY = FLAGS.negatives_per_query
 cfg.MAX_EPOCH = FLAGS.max_epoch
@@ -89,9 +77,6 @@ cfg.TRIPLET_USE_BEST_POSITIVES = FLAGS.triplet_use_best_positives
 cfg.LOSS_LAZY = FLAGS.loss_not_lazy
 cfg.LOSS_IGNORE_ZERO_BATCH = FLAGS.loss_ignore_zero_batch
 
-cfg.TRAIN_FILE = 'generating_queries/training_queries_baseline.pickle'
-cfg.TEST_FILE = 'generating_queries/test_queries_baseline.pickle'
-
 cfg.LOG_DIR = FLAGS.log_dir
 if not os.path.exists(cfg.LOG_DIR):
     os.mkdir(cfg.LOG_DIR)
@@ -103,8 +88,8 @@ cfg.RESULTS_FOLDER = FLAGS.results_dir
 cfg.DATASET_FOLDER = FLAGS.dataset_folder
 
 # Load dictionary of training queries
-TRAINING_QUERIES = get_queries_dict(cfg.TRAIN_FILE)
-TEST_QUERIES = get_queries_dict(cfg.TEST_FILE)
+TRAINING_QUERIES = get_queries_dict(os.path.join(BASE_DIR, cfg.TRAIN_FILE))
+TEST_QUERIES = get_queries_dict(os.path.join(BASE_DIR, cfg.TEST_FILE))
 
 cfg.BN_INIT_DECAY = 0.5
 cfg.BN_DECAY_DECAY_RATE = 0.5
@@ -116,7 +101,7 @@ TRAINING_LATENT_VECTORS = []
 
 TOTAL_ITERATIONS = 0
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def get_bn_decay(batch):
@@ -131,14 +116,12 @@ def log_string(out_str):
     LOG_FOUT.flush()
     print(out_str)
 
-# learning rate halfed every 5 epoch
-
+log_string('**** xyzi, batch=8, normlize，NO STN， preDATA unnormlize，lr=0.00001 ****')
 
 def get_learning_rate(epoch):
     learning_rate = cfg.BASE_LEARNING_RATE * ((0.9) ** (epoch // 5))
     learning_rate = max(learning_rate, 0.00001)  # CLIP THE LEARNING RATE!
     return learning_rate
-
 
 def train():
     global HARD_NEGATIVES, TOTAL_ITERATIONS
@@ -153,10 +136,9 @@ def train():
     learning_rate = get_learning_rate(0)
 
     train_writer = SummaryWriter(os.path.join(cfg.LOG_DIR, 'train'))
-    #test_writer = SummaryWriter(os.path.join(cfg.LOG_DIR, 'test'))
 
-    model = PNV.PointNetVlad(global_feat=True, feature_transform=True,
-                             max_pool=False, output_dim=cfg.FEATURE_OUTPUT_DIM, num_points=cfg.NUM_POINTS)
+    model = PNV.PointNetVlad(global_feat=True, feature_transform=False, max_pool=False, inputdim=cfg.INPUT_DIM,
+                             output_dim=cfg.FEATURE_OUTPUT_DIM, num_points=cfg.NUM_POINTS)
     model = model.to(device)
 
     parameters = filter(lambda p: p.requires_grad, model.parameters())
@@ -171,17 +153,18 @@ def train():
         exit(0)
 
     if FLAGS.resume:
-        resume_filename = cfg.LOG_DIR + "checkpoint.pth.tar"
+        resume_filename = cfg.LOG_DIR + "last_checkpoint.pth.tar"
         print("Resuming From ", resume_filename)
         checkpoint = torch.load(resume_filename)
-        saved_state_dict = checkpoint['state_dict']
-        starting_epoch = checkpoint['epoch']
-        TOTAL_ITERATIONS = starting_epoch * len(TRAINING_QUERIES)
+        starting_epoch = checkpoint['epoch'] + 1
 
-        model.load_state_dict(saved_state_dict)
+        model.load_state_dict(checkpoint['state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
+
     else:
         starting_epoch = 0
+
+    # scheduler = ReduceLROnPlateau(optimizer, 'max', factor=0.2, patience=2, verbose=True, threshold=0.1, min_lr=0.00001)
 
     model = nn.DataParallel(model)
 
@@ -189,9 +172,11 @@ def train():
     LOG_FOUT.write("\n")
     LOG_FOUT.flush()
 
+    best_recall = 0
+    # recall, one_percent_recall = evaluate.evaluate_model(model)
+
     for epoch in range(starting_epoch, cfg.MAX_EPOCH):
         print(epoch)
-        print()
         log_string('**** EPOCH %03d ****' % (epoch))
         sys.stdout.flush()
 
@@ -199,10 +184,35 @@ def train():
 
         log_string('EVALUATING...')
         cfg.OUTPUT_FILE = cfg.RESULTS_FOLDER + 'results_' + str(epoch) + '.txt'
-        eval_recall = evaluate.evaluate_model(model)
-        log_string('EVAL RECALL: %s' % str(eval_recall))
+        recall, one_percent_recall = evaluate.evaluate_model(model)
+        log_string('EVAL RECALL: %s' % str(recall))
+        log_string('EVAL one_percent_recall: %s' % str(one_percent_recall))
+        train_writer.add_scalar("Val Recall", one_percent_recall, epoch)
 
-        train_writer.add_scalar("Val Recall", eval_recall, epoch)
+        if isinstance(model, nn.DataParallel):
+            model_to_save = model.module
+        else:
+            model_to_save = model
+        save_name = os.path.join(cfg.LOG_DIR, 'last_checkpoint.pth.tar')
+        torch.save({
+            'epoch': epoch,
+            'state_dict': model_to_save.state_dict(),
+            'optimizer': optimizer.state_dict() },
+            save_name)
+        print("Model Saved As " + save_name)
+
+        # save BEST model
+        if one_percent_recall >= best_recall:
+            best_recall = one_percent_recall
+            save_name = os.path.join(cfg.LOG_DIR, 'best_checkpoint.pth.tar')
+            torch.save({
+                'epoch': epoch,
+                'state_dict': model_to_save.state_dict(),
+                'optimizer': optimizer.state_dict()},
+                save_name)
+        log_string('best_recall: %s' % str(best_recall))
+
+        # scheduler.step(one_percent_recall)
 
 
 def train_one_epoch(model, optimizer, train_writer, loss_function, epoch):
@@ -218,15 +228,16 @@ def train_one_epoch(model, optimizer, train_writer, loss_function, epoch):
     # Shuffle train files
     train_file_idxs = np.arange(0, len(TRAINING_QUERIES.keys()))
     np.random.shuffle(train_file_idxs)
+    loss_sum = 0
 
     for i in range(len(train_file_idxs)//cfg.BATCH_NUM_QUERIES):
         # for i in range (5):
-        batch_keys = train_file_idxs[i *
-                                     cfg.BATCH_NUM_QUERIES:(i+1)*cfg.BATCH_NUM_QUERIES]
+        batch_keys = train_file_idxs[i * cfg.BATCH_NUM_QUERIES:(i+1)*cfg.BATCH_NUM_QUERIES]
         q_tuples = []
 
         faulty_tuple = False
         no_other_neg = False
+
         for j in range(cfg.BATCH_NUM_QUERIES):
             if (len(TRAINING_QUERIES[batch_keys[j]]["positives"]) < cfg.TRAIN_POSITIVES_PER_QUERY):
                 faulty_tuple = True
@@ -241,11 +252,9 @@ def train_one_epoch(model, optimizer, train_writer, loss_function, epoch):
                 # q_tuples.append(get_jittered_tuple(TRAINING_QUERIES[batch_keys[j]],POSITIVES_PER_QUERY,NEGATIVES_PER_QUERY, TRAINING_QUERIES, hard_neg=[], other_neg=True))
 
             elif (len(HARD_NEGATIVES.keys()) == 0):
-                query = get_feature_representation(
-                    TRAINING_QUERIES[batch_keys[j]]['query'], model)
+                query = get_feature_representation(TRAINING_QUERIES[batch_keys[j]]['scan_file'], model)
                 random.shuffle(TRAINING_QUERIES[batch_keys[j]]['negatives'])
-                negatives = TRAINING_QUERIES[batch_keys[j]
-                                             ]['negatives'][0:sampled_neg]
+                negatives = TRAINING_QUERIES[batch_keys[j]]['negatives'][0:sampled_neg]
                 hard_negs = get_random_hard_negatives(
                     query, negatives, num_to_take)
                 print(hard_negs)
@@ -256,14 +265,11 @@ def train_one_epoch(model, optimizer, train_writer, loss_function, epoch):
                 # q_tuples.append(get_jittered_tuple(TRAINING_QUERIES[batch_keys[j]],POSITIVES_PER_QUERY,NEGATIVES_PER_QUERY, TRAINING_QUERIES, hard_negs, other_neg=True))
             else:
                 query = get_feature_representation(
-                    TRAINING_QUERIES[batch_keys[j]]['query'], model)
+                    TRAINING_QUERIES[batch_keys[j]]['scan_file'], model)
                 random.shuffle(TRAINING_QUERIES[batch_keys[j]]['negatives'])
-                negatives = TRAINING_QUERIES[batch_keys[j]
-                                             ]['negatives'][0:sampled_neg]
-                hard_negs = get_random_hard_negatives(
-                    query, negatives, num_to_take)
-                hard_negs = list(set().union(
-                    HARD_NEGATIVES[batch_keys[j]], hard_negs))
+                negatives = TRAINING_QUERIES[batch_keys[j]]['negatives'][0:sampled_neg]
+                hard_negs = get_random_hard_negatives(query, negatives, num_to_take)
+                hard_negs = list(set().union(HARD_NEGATIVES[batch_keys[j]], hard_negs))
                 print('hard', hard_negs)
                 q_tuples.append(
                     get_query_tuple(TRAINING_QUERIES[batch_keys[j]], cfg.TRAIN_POSITIVES_PER_QUERY, cfg.TRAIN_NEGATIVES_PER_QUERY,
@@ -311,9 +317,11 @@ def train_one_epoch(model, optimizer, train_writer, loss_function, epoch):
 
         output_queries, output_positives, output_negatives, output_other_neg = run_model(
             model, queries, positives, negatives, other_neg)
+
         loss = loss_function(output_queries, output_positives, output_negatives, output_other_neg, cfg.MARGIN_1, cfg.MARGIN_2, use_min=cfg.TRIPLET_USE_BEST_POSITIVES, lazy=cfg.LOSS_LAZY, ignore_zero_loss=cfg.LOSS_IGNORE_ZERO_BATCH)
         loss.backward()
         optimizer.step()
+        loss_sum += loss.item()
 
         log_string('batch loss: %f' % loss)
         train_writer.add_scalar("Loss", loss.cpu().item(), TOTAL_ITERATIONS)
@@ -326,20 +334,11 @@ def train_one_epoch(model, optimizer, train_writer, loss_function, epoch):
                 model, TRAINING_QUERIES)
             print("Updated cached feature vectors")
 
-        if (i % (6000 // cfg.BATCH_NUM_QUERIES) == 101):
-            if isinstance(model, nn.DataParallel):
-                model_to_save = model.module
-            else:
-                model_to_save = model
-            save_name = cfg.LOG_DIR + cfg.MODEL_FILENAME
-            torch.save({
-                'epoch': epoch,
-                'iter': TOTAL_ITERATIONS,
-                'state_dict': model_to_save.state_dict(),
-                'optimizer': optimizer.state_dict(),
-            },
-                save_name)
-            print("Model Saved As " + save_name)
+        if i == len(train_file_idxs)//cfg.BATCH_NUM_QUERIES - 1:
+            log_string('----' + str(i) + '-----')
+            log_string('batch loss: %f' % loss)
+            epoch_mean_loss = loss_sum / len(train_file_idxs)//cfg.BATCH_NUM_QUERIES
+            log_string('epoch loss: %f' % epoch_mean_loss)
 
 
 def get_feature_representation(filename, model):
@@ -390,7 +389,7 @@ def get_latent_vectors(model, dict_to_process):
                                        batch_num:(q_index+1)*(batch_num)]
         file_names = []
         for index in file_indices:
-            file_names.append(dict_to_process[index]["query"])
+            file_names.append(dict_to_process[index]["scan_file"])
         queries = load_pc_files(file_names)
 
         feed_tensor = torch.from_numpy(queries).float()
@@ -411,7 +410,7 @@ def get_latent_vectors(model, dict_to_process):
     # handle edge case
     for q_index in range((len(train_file_idxs) // batch_num * batch_num), len(dict_to_process.keys())):
         index = train_file_idxs[q_index]
-        queries = load_pc_files([dict_to_process[index]["query"]])
+        queries = load_pc_files([dict_to_process[index]["scan_file"]])
         queries = np.expand_dims(queries, axis=1)
 
         # if (BATCH_NUM_QUERIES - 1 > 0):
@@ -447,7 +446,7 @@ def run_model(model, queries, positives, negatives, other_neg, require_grad=True
     other_neg_tensor = torch.from_numpy(other_neg).float()
     feed_tensor = torch.cat(
         (queries_tensor, positives_tensor, negatives_tensor, other_neg_tensor), 1)
-    feed_tensor = feed_tensor.view((-1, 1, cfg.NUM_POINTS, 3))
+    feed_tensor = feed_tensor.view((-1, 1, cfg.NUM_POINTS, cfg.INPUT_DIM)) #3,4
     feed_tensor.requires_grad_(require_grad)
     feed_tensor = feed_tensor.to(device)
     if require_grad:
@@ -455,6 +454,7 @@ def run_model(model, queries, positives, negatives, other_neg, require_grad=True
     else:
         with torch.no_grad():
             output = model(feed_tensor)
+    # a = output.cpu().detach().numpy()
     output = output.view(cfg.BATCH_NUM_QUERIES, -1, cfg.FEATURE_OUTPUT_DIM)
     o1, o2, o3, o4 = torch.split(
         output, [1, cfg.TRAIN_POSITIVES_PER_QUERY, cfg.TRAIN_NEGATIVES_PER_QUERY, 1], dim=1)

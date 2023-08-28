@@ -1,13 +1,14 @@
 # GLOBAL
-NUM_POINTS = 4096
+NUM_POINTS = 1280   # 1280 1024
 FEATURE_OUTPUT_DIM = 256
 RESULTS_FOLDER = "results/"
 OUTPUT_FILE = "results/results.txt"
+INPUT_DIM = 4
 
 LOG_DIR = 'log/'
 MODEL_FILENAME = "model.ckpt"
 
-DATASET_FOLDER = '../../benchmark_datasets/'
+DATASET_FOLDER = '/home/cyw/CYW/Datasets/mmWave-Radar-Relocalization-main/dataset'
 
 # TRAIN
 BATCH_NUM_QUERIES = 2
@@ -29,8 +30,9 @@ BN_DECAY_CLIP = 0.99
 
 RESUME = False
 
-TRAIN_FILE = 'generating_queries/training_queries_baseline.pickle'
-TEST_FILE = 'generating_queries/test_queries_baseline.pickle'
+TRAIN_FILE = './generating_queries/1843_tuples/training_queries_baseline.pickle'
+TEST_FILE = './generating_queries/1843_tuples/evaluation_query_9seqs_3m.pickle'
+
 
 # LOSS
 LOSS_FUNCTION = 'quadruplet'
@@ -39,13 +41,15 @@ TRIPLET_USE_BEST_POSITIVES = False
 LOSS_IGNORE_ZERO_BATCH = False
 
 # EVAL6
-EVAL_BATCH_SIZE = 2
+EVAL_BATCH_SIZE = 1
 EVAL_POSITIVES_PER_QUERY = 4
 EVAL_NEGATIVES_PER_QUERY = 12
+EVAL_SEQ = 'seq1'
 
-EVAL_DATABASE_FILE = 'generating_queries/oxford_evaluation_database.pickle'
-EVAL_QUERY_FILE = 'generating_queries/oxford_evaluation_query.pickle'
-
+EVAL_DATABASE_FILE = './generating_queries/1843_tuples/evaluation_database_9seqs.pickle'
+EVAL_QUERY_FILE = './generating_queries/1843_tuples/evaluation_query_9seqs_3m.pickle'
+# EVAL_DATABASE_FILE = './generating_queries/1843_tuples/evaluation_database_clusters.pickle'
+# EVAL_QUERY_FILE = './generating_queries/1843_tuples/evaluation_query_clusters_3m.pickle'
 
 def cfg_str():
     out_string = ""
