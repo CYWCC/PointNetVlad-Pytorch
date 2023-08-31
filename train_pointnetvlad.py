@@ -3,7 +3,7 @@ import argparse
 import sys
 from sklearn.neighbors import KDTree
 
-import evaluate_radar as evaluate
+import evaluate as evaluate
 import loss.pointnetvlad_loss as PNV_loss
 import models.PointNetVlad as PNV
 
@@ -25,13 +25,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--log_dir', default='log/', help='Log dir [default: log]')
 parser.add_argument('--results_dir', default='results/',
                     help='results dir [default: results]')
-parser.add_argument('--positives_per_query', type=int, default=2,
+parser.add_argument('--positives_per_query', type=int, default=4,
                     help='Number of potential positives in each training tuple [default: 2]')
 parser.add_argument('--negatives_per_query', type=int, default=18,
                     help='Number of definite negatives in each training tuple [default: 18]')
 parser.add_argument('--max_epoch', type=int, default=20,
                     help='Epoch to run [default: 20]')
-parser.add_argument('--batch_num_queries', type=int, default=8,
+parser.add_argument('--batch_num_queries', type=int, default=2,
                     help='Batch Size during training [default: 2]')
 parser.add_argument('--learning_rate', type=float, default=0.00001,
                     help='Initial learning rate [default: 0.000005]')
@@ -53,13 +53,12 @@ parser.add_argument('--loss_not_lazy', type=bool, default=True, help='If present
 parser.add_argument('--loss_ignore_zero_batch', type=bool, default=True, help='If present, mean only batches with loss > 0.0')
 parser.add_argument('--triplet_use_best_positives', type=bool, default=True, help='If present, use best positives, otherwise use hardest positives')
 parser.add_argument('--resume', type=bool, default=False, help='If present, restore checkpoint and resume training')
-parser.add_argument('--dataset_folder', default='/home/cyw/CYW/Datasets/mmWave-Radar-Relocalization-main/dataset/',
+parser.add_argument('--dataset_folder', default='/media/cyw/CYW-ZX2/kuangye_data/',
                     help='PointNetVlad Dataset Folder')
 
 FLAGS = parser.parse_args()
 cfg.BATCH_NUM_QUERIES = FLAGS.batch_num_queries
-#cfg.EVAL_BATCH_SIZE = 12
-# cfg.NUM_POINTS = 64  # 1280
+cfg.NUM_POINTS = 4096
 cfg.TRAIN_POSITIVES_PER_QUERY = FLAGS.positives_per_query
 cfg.TRAIN_NEGATIVES_PER_QUERY = FLAGS.negatives_per_query
 cfg.MAX_EPOCH = FLAGS.max_epoch
@@ -71,6 +70,7 @@ cfg.DECAY_RATE = FLAGS.decay_rate
 cfg.MARGIN1 = FLAGS.margin_1
 cfg.MARGIN2 = FLAGS.margin_2
 cfg.FEATURE_OUTPUT_DIM = 256
+cfg.INPUT_DIM = 3
 
 cfg.LOSS_FUNCTION = FLAGS.loss_function
 cfg.TRIPLET_USE_BEST_POSITIVES = FLAGS.triplet_use_best_positives
@@ -116,8 +116,6 @@ def log_string(out_str):
     LOG_FOUT.flush()
     print(out_str)
 
-log_string('**** xyzi, batch=8, normlize，NO STN， preDATA unnormlize，lr=0.00001 ****')
-
 def get_learning_rate(epoch):
     learning_rate = cfg.BASE_LEARNING_RATE * ((0.9) ** (epoch // 5))
     learning_rate = max(learning_rate, 0.00001)  # CLIP THE LEARNING RATE!
@@ -126,9 +124,7 @@ def get_learning_rate(epoch):
 def train():
     global HARD_NEGATIVES, TOTAL_ITERATIONS
     bn_decay = get_bn_decay(0)
-    #tf.summary.scalar('bn_decay', bn_decay)
 
-    #loss = lazy_quadruplet_loss(q_vec, pos_vecs, neg_vecs, other_neg_vec, MARGIN1, MARGIN2)
     if cfg.LOSS_FUNCTION == 'quadruplet':
         loss_function = PNV_loss.quadruplet_loss
     else:
@@ -137,7 +133,7 @@ def train():
 
     train_writer = SummaryWriter(os.path.join(cfg.LOG_DIR, 'train'))
 
-    model = PNV.PointNetVlad(global_feat=True, feature_transform=False, max_pool=False, inputdim=cfg.INPUT_DIM,
+    model = PNV.PointNetVlad(global_feat=True, feature_transform=True, max_pool=False, inputdim=cfg.INPUT_DIM,
                              output_dim=cfg.FEATURE_OUTPUT_DIM, num_points=cfg.NUM_POINTS)
     model = model.to(device)
 
@@ -163,8 +159,6 @@ def train():
 
     else:
         starting_epoch = 0
-
-    # scheduler = ReduceLROnPlateau(optimizer, 'max', factor=0.2, patience=2, verbose=True, threshold=0.1, min_lr=0.00001)
 
     model = nn.DataParallel(model)
 
@@ -211,8 +205,6 @@ def train():
                 'optimizer': optimizer.state_dict()},
                 save_name)
         log_string('best_recall: %s' % str(best_recall))
-
-        # scheduler.step(one_percent_recall)
 
 
 def train_one_epoch(model, optimizer, train_writer, loss_function, epoch):
@@ -337,7 +329,7 @@ def train_one_epoch(model, optimizer, train_writer, loss_function, epoch):
         if i == len(train_file_idxs)//cfg.BATCH_NUM_QUERIES - 1:
             log_string('----' + str(i) + '-----')
             log_string('batch loss: %f' % loss)
-            epoch_mean_loss = loss_sum / len(train_file_idxs)//cfg.BATCH_NUM_QUERIES
+            epoch_mean_loss = loss_sum
             log_string('epoch loss: %f' % epoch_mean_loss)
 
 

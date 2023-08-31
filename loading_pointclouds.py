@@ -3,6 +3,7 @@ import pickle
 import numpy as np
 import random
 import config as cfg
+import open3d as o3d
 
 # pc clusters
 
@@ -25,13 +26,9 @@ def get_sets_dict(filename):
 def load_pc_file(filename):
     # returns Nx3 matrix
     file_path = os.path.join(cfg.DATASET_FOLDER, filename)
-    pc = np.fromfile(file_path, dtype=np.float64)
+    pcd = o3d.io.read_point_cloud(file_path)
+    pc = np.array(pcd.points)
     pc = np.float32(pc)
-    if (pc.shape[0] != cfg.NUM_POINTS * cfg.INPUT_DIM): #14
-        print("Error in pointcloud shape")
-        return np.array([])
-
-    pc = np.reshape(pc,(pc.shape[0]//cfg.INPUT_DIM, cfg.INPUT_DIM))
     return pc
 
 def load_pc_files(filenames):

@@ -202,9 +202,9 @@ class PointNetfeat(nn.Module):
         batchsize, _, _, input_dim = x.size()
         xyz = x[:, :, :, :3]
         ### STN
-        # trans = self.stn(xyz)
-        # xyz = torch.matmul(torch.squeeze(xyz), trans)
-        # xyz = xyz.view(batchsize, 1, -1, 3)
+        trans = self.stn(xyz)
+        xyz = torch.matmul(torch.squeeze(xyz), trans)
+        xyz = xyz.view(batchsize, 1, -1, 3)
 
         if input_dim > 3:
             x = torch.cat((xyz, x[:, :, :, 3:]), dim=3)
